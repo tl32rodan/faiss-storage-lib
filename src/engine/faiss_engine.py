@@ -118,6 +118,37 @@ class FaissEngine:
             )
         return results
 
+    def get_by_id(self, uid: str) -> VectorDocument | None:
+        """
+        Retrieve a document by its unique ID, reconstructing the vector from the index.
+        """
+        cursor = self._conn.execute(
+            "SELECT uid, int_id, payload FROM documents WHERE uid = ?",
+            (uid,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+
+        int_id = int(row["int_id"])
+        try:
+            payload = json.loads(row["payload"])
+        except json.JSONDecodeError:
+            payload = {}
+
+        vector = []
+        try:
+            vector = self._reconstruct_vector(int_id)
+        except RuntimeError:
+            pass
+
+        return VectorDocument(
+            uid=row["uid"],
+            vector=vector,
+            payload=payload,
+            score=None,
+        )
+
     def persist(self) -> None:
         self._faiss.write_index(self._index, str(self.index_path))
 
@@ -142,7 +173,7 @@ class FaissEngine:
         return self._create_index()
 
     def _create_index(self) -> "faiss.Index":
-        base_index = self._faiss.IndexHNSWFlat(self.dimension, 32)
+        base_index = self._faiss.IndexFlatL2(self.dimension)
         return self._faiss.IndexIDMap(base_index)
 
     def _prepare_vectors(self, values: List[List[float]]) -> np.ndarray:
@@ -179,8 +210,17 @@ class FaissEngine:
         return {int(row["int_id"]): row for row in cursor.fetchall()}
 
     def _reconstruct_vector(self, int_id: int) -> List[float]:
+        return self._reconstruct_vector_from(self._index, int_id)
+
+    def _reconstruct_vector_from(self, index: "faiss.Index", int_id: int) -> List[float]:
         try:
-            return self._index.reconstruct(int_id).tolist()
+            if hasattr(index, "id_map") and hasattr(index, "index"):
+                id_map = self._faiss.vector_to_array(index.id_map)
+                matches = np.where(id_map == int_id)[0]
+                if matches.size == 0:
+                    return []
+                return index.index.reconstruct(int(matches[0])).tolist()
+            return index.reconstruct(int_id).tolist()
         except RuntimeError:
             return []
 
@@ -196,9 +236,8 @@ class FaissEngine:
             if uid in overrides:
                 vector = overrides[uid].vector
             else:
-                try:
-                    vector = old_index.reconstruct(int_id).tolist()
-                except RuntimeError:
+                vector = self._reconstruct_vector_from(old_index, int_id)
+                if not vector:
                     continue
             vectors.append(vector)
             ids.append(int_id)
