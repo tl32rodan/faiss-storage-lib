@@ -210,14 +210,17 @@ class FaissEngine:
         return {int(row["int_id"]): row for row in cursor.fetchall()}
 
     def _reconstruct_vector(self, int_id: int) -> List[float]:
+        return self._reconstruct_vector_from(self._index, int_id)
+
+    def _reconstruct_vector_from(self, index: "faiss.Index", int_id: int) -> List[float]:
         try:
-            if hasattr(self._index, "id_map") and hasattr(self._index, "index"):
-                id_map = self._faiss.vector_to_array(self._index.id_map)
+            if hasattr(index, "id_map") and hasattr(index, "index"):
+                id_map = self._faiss.vector_to_array(index.id_map)
                 matches = np.where(id_map == int_id)[0]
                 if matches.size == 0:
                     return []
-                return self._index.index.reconstruct(int(matches[0])).tolist()
-            return self._index.reconstruct(int_id).tolist()
+                return index.index.reconstruct(int(matches[0])).tolist()
+            return index.reconstruct(int_id).tolist()
         except RuntimeError:
             return []
 
@@ -233,9 +236,8 @@ class FaissEngine:
             if uid in overrides:
                 vector = overrides[uid].vector
             else:
-                try:
-                    vector = old_index.reconstruct(int_id).tolist()
-                except RuntimeError:
+                vector = self._reconstruct_vector_from(old_index, int_id)
+                if not vector:
                     continue
             vectors.append(vector)
             ids.append(int_id)

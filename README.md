@@ -9,8 +9,8 @@ application-specific logic.
 ## Core Concepts
 
 - **VectorDocument** is the single atomic record stored and retrieved by the system.
-- **FaissEngine** provides CRUD operations backed by a FAISS HNSW index and a SQLite
-  document store for persistence.
+- **FaissEngine** provides CRUD operations backed by a FAISS `IndexFlatL2` index
+  wrapped in an `IndexIDMap`, plus a SQLite document store for persistence.
 - **IndexRegistry** manages multiple named indices under a single storage root,
   enabling multi-tenant storage.
 
@@ -35,6 +35,7 @@ engine.add(
     ]
 )
 results = engine.search([0.0] * 1536, top_k=5)
+doc = engine.get_by_id("file::func")
 engine.persist()
 engine.close()
 ```
