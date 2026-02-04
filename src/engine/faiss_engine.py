@@ -118,6 +118,37 @@ class FaissEngine:
             )
         return results
 
+    def get_by_id(self, uid: str) -> VectorDocument | None:
+        """
+        Retrieve a document by its unique ID, reconstructing the vector from the index.
+        """
+        cursor = self._conn.execute(
+            "SELECT uid, int_id, payload FROM documents WHERE uid = ?",
+            (uid,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+
+        int_id = int(row["int_id"])
+        try:
+            payload = json.loads(row["payload"])
+        except json.JSONDecodeError:
+            payload = {}
+
+        vector = []
+        try:
+            vector = self._reconstruct_vector(int_id)
+        except RuntimeError:
+            pass
+
+        return VectorDocument(
+            uid=row["uid"],
+            vector=vector,
+            payload=payload,
+            score=None,
+        )
+
     def persist(self) -> None:
         self._faiss.write_index(self._index, str(self.index_path))
 
@@ -142,7 +173,7 @@ class FaissEngine:
         return self._create_index()
 
     def _create_index(self) -> "faiss.Index":
-        base_index = self._faiss.IndexHNSWFlat(self.dimension, 32)
+        base_index = self._faiss.IndexFlatL2(self.dimension)
         return self._faiss.IndexIDMap(base_index)
 
     def _prepare_vectors(self, values: List[List[float]]) -> np.ndarray:
@@ -180,6 +211,12 @@ class FaissEngine:
 
     def _reconstruct_vector(self, int_id: int) -> List[float]:
         try:
+            if hasattr(self._index, "id_map") and hasattr(self._index, "index"):
+                id_map = self._faiss.vector_to_array(self._index.id_map)
+                matches = np.where(id_map == int_id)[0]
+                if matches.size == 0:
+                    return []
+                return self._index.index.reconstruct(int(matches[0])).tolist()
             return self._index.reconstruct(int_id).tolist()
         except RuntimeError:
             return []
