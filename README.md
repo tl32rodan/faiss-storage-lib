@@ -21,8 +21,8 @@ pip install -r requirements.txt
 ```
 
 ```python
-from src.core import VectorDocument
-from src.engine import FaissEngine
+from faiss_storage_lib.core import VectorDocument
+from faiss_storage_lib.engine import FaissEngine
 
 engine = FaissEngine("./data/source_code", dimension=1536)
 engine.add(
@@ -42,9 +42,9 @@ engine.close()
 
 ## Project Structure
 
-- `src/core/schema.py`: `VectorDocument` definition.
-- `src/engine/faiss_engine.py`: FAISS + SQLite storage engine.
-- `src/engine/registry.py`: multi-tenant index registry.
+- `faiss_storage_lib/core/schema.py`: `VectorDocument` definition.
+- `faiss_storage_lib/engine/faiss_engine.py`: FAISS + SQLite storage engine.
+- `faiss_storage_lib/engine/registry.py`: multi-tenant index registry.
 
 ## Development
 

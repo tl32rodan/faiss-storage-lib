@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from src.engine import IndexRegistry
+from faiss_storage_lib.engine import IndexRegistry
 
 
 class TestIndexRegistry(unittest.TestCase):

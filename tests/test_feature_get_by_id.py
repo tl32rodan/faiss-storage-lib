@@ -1,8 +1,8 @@
 import tempfile
 import unittest
 
-from src.core.schema import VectorDocument
-from src.engine.faiss_engine import FaissEngine
+from faiss_storage_lib.core.schema import VectorDocument
+from faiss_storage_lib.engine.faiss_engine import FaissEngine
 
 
 class TestFaissEngineGetById(unittest.TestCase):
