@@ -12,7 +12,7 @@ dependencies = ["faiss-cpu", "numpy"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["faiss_storage_lib*"]
 
 [tool.ruff]
 line-length = 100

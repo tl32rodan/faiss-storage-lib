@@ -1,8 +1,8 @@
 import tempfile
 import unittest
 
-from src.core import VectorDocument
-from src.engine import FaissEngine
+from faiss_storage_lib.core import VectorDocument
+from faiss_storage_lib.engine import FaissEngine
 
 
 class TestFaissEngineCrud(unittest.TestCase):

@@ -1,5 +1,5 @@
 """Core data structures for the FAISS storage library."""
 
-from src.core.schema import VectorDocument
+from faiss_storage_lib.core.schema import VectorDocument
 
 __all__ = ["VectorDocument"]

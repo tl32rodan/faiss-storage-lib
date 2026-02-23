@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict
 
-from src.engine.faiss_engine import FaissEngine
+from faiss_storage_lib.engine.faiss_engine import FaissEngine
 
 
 class IndexRegistry:

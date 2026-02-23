@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Dict, Iterable, List, Sequence
 
 import numpy as np
 
-from src.core.schema import VectorDocument
+from faiss_storage_lib.core.schema import VectorDocument
 
 if TYPE_CHECKING:
     import faiss
