@@ -27,79 +27,81 @@ class FaissEngine:
         self._faiss = faiss
         self._index = self._load_or_create_index()
         self._thread_local = threading.local()
+        self._write_lock = threading.Lock()
         self._ensure_schema()
 
     def _get_conn(self) -> sqlite3.Connection:
-        conn = getattr(self._thread_local, "conn", None)
-        if conn is None:
+        if not hasattr(self._thread_local, "conn"):
             conn = sqlite3.connect(self.docstore_path)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL;")
             self._thread_local.conn = conn
-        return conn
+        return self._thread_local.conn
 
     def add(self, documents: Iterable[VectorDocument]) -> None:
-        doc_list = list(documents)
-        if not doc_list:
-            return
-        existing_ids = self._fetch_int_ids([doc.uid for doc in doc_list])
-        ids_to_remove = [existing_ids[doc.uid] for doc in doc_list if doc.uid in existing_ids]
-        rebuild_needed = False
-        if ids_to_remove:
-            try:
-                self._remove_ids(ids_to_remove)
-            except RuntimeError:
-                rebuild_needed = True
-        next_id = self._next_int_id()
-        vectors: List[List[float]] = []
-        ids: List[int] = []
-        payload_rows = []
-        for doc in doc_list:
-            int_id = existing_ids.get(doc.uid)
-            if int_id is None:
-                int_id = next_id
-                next_id += 1
-            ids.append(int_id)
-            vectors.append(doc.vector)
-            payload_rows.append((doc.uid, int_id, json.dumps(doc.payload)))
-        conn = self._get_conn()
-        with conn:
-            conn.executemany(
-                """
-                INSERT INTO documents (uid, int_id, payload)
-                VALUES (?, ?, ?)
-                ON CONFLICT(uid) DO UPDATE SET
-                    int_id = excluded.int_id,
-                    payload = excluded.payload
-                """,
-                payload_rows,
-            )
-        if rebuild_needed:
-            self._rebuild_index({doc.uid: doc for doc in doc_list})
-        else:
-            self._index.add_with_ids(self._prepare_vectors(vectors), self._prepare_ids(ids))
+        with self._write_lock:
+            doc_list = list(documents)
+            if not doc_list:
+                return
+            existing_ids = self._fetch_int_ids([doc.uid for doc in doc_list])
+            ids_to_remove = [existing_ids[doc.uid] for doc in doc_list if doc.uid in existing_ids]
+            rebuild_needed = False
+            if ids_to_remove:
+                try:
+                    self._remove_ids(ids_to_remove)
+                except RuntimeError:
+                    rebuild_needed = True
+            next_id = self._next_int_id()
+            vectors: List[List[float]] = []
+            ids: List[int] = []
+            payload_rows = []
+            for doc in doc_list:
+                int_id = existing_ids.get(doc.uid)
+                if int_id is None:
+                    int_id = next_id
+                    next_id += 1
+                ids.append(int_id)
+                vectors.append(doc.vector)
+                payload_rows.append((doc.uid, int_id, json.dumps(doc.payload)))
+            conn = self._get_conn()
+            with conn:
+                conn.executemany(
+                    """
+                    INSERT INTO documents (uid, int_id, payload)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(uid) DO UPDATE SET
+                        int_id = excluded.int_id,
+                        payload = excluded.payload
+                    """,
+                    payload_rows,
+                )
+            if rebuild_needed:
+                self._rebuild_index({doc.uid: doc for doc in doc_list})
+            else:
+                self._index.add_with_ids(self._prepare_vectors(vectors), self._prepare_ids(ids))
 
     def delete(self, uids: Iterable[str]) -> None:
-        uid_list = list(uids)
-        if not uid_list:
-            return
-        existing_ids = self._fetch_int_ids(uid_list)
-        ids = [existing_ids[uid] for uid in uid_list if uid in existing_ids]
-        rebuild_needed = False
-        if ids:
-            try:
-                self._remove_ids(ids)
-            except RuntimeError:
-                rebuild_needed = True
-        conn = self._get_conn()
-        with conn:
-            placeholders = ", ".join("?" for _ in uid_list)
-            conn.execute(
-                f"DELETE FROM documents WHERE uid IN ({placeholders})",
-                uid_list,
-            )
-        if rebuild_needed:
-            self._rebuild_index({})
+        with self._write_lock:
+            uid_list = list(uids)
+            if not uid_list:
+                return
+            existing_ids = self._fetch_int_ids(uid_list)
+            ids = [existing_ids[uid] for uid in uid_list if uid in existing_ids]
+            rebuild_needed = False
+            if ids:
+                try:
+                    self._remove_ids(ids)
+                except RuntimeError:
+                    rebuild_needed = True
+            conn = self._get_conn()
+            with conn:
+                placeholders = ", ".join("?" for _ in uid_list)
+                conn.execute(
+                    f"DELETE FROM documents WHERE uid IN ({placeholders})",
+                    uid_list,
+                )
+            if rebuild_needed:
+                self._rebuild_index({})
 
     def search(self, query_vector: List[float], top_k: int) -> List[VectorDocument]:
         if top_k <= 0 or self._index.ntotal == 0:
@@ -161,12 +163,12 @@ class FaissEngine:
         )
 
     def persist(self) -> None:
-        self._faiss.write_index(self._index, str(self.index_path))
+        with self._write_lock:
+            self._faiss.write_index(self._index, str(self.index_path))
 
     def close(self) -> None:
-        conn = getattr(self._thread_local, "conn", None)
-        if conn is not None:
-            conn.close()
+        if hasattr(self._thread_local, "conn"):
+            self._thread_local.conn.close()
             del self._thread_local.conn
 
     def _ensure_schema(self) -> None:
