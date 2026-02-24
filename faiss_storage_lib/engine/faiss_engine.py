@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterable, List, Sequence
 
@@ -25,9 +26,17 @@ class FaissEngine:
 
         self._faiss = faiss
         self._index = self._load_or_create_index()
-        self._conn = sqlite3.connect(self.docstore_path)
-        self._conn.row_factory = sqlite3.Row
+        self._thread_local = threading.local()
         self._ensure_schema()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        conn = getattr(self._thread_local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self.docstore_path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            self._thread_local.conn = conn
+        return conn
 
     def add(self, documents: Iterable[VectorDocument]) -> None:
         doc_list = list(documents)
@@ -53,8 +62,9 @@ class FaissEngine:
             ids.append(int_id)
             vectors.append(doc.vector)
             payload_rows.append((doc.uid, int_id, json.dumps(doc.payload)))
-        with self._conn:
-            self._conn.executemany(
+        conn = self._get_conn()
+        with conn:
+            conn.executemany(
                 """
                 INSERT INTO documents (uid, int_id, payload)
                 VALUES (?, ?, ?)
@@ -81,9 +91,10 @@ class FaissEngine:
                 self._remove_ids(ids)
             except RuntimeError:
                 rebuild_needed = True
-        with self._conn:
+        conn = self._get_conn()
+        with conn:
             placeholders = ", ".join("?" for _ in uid_list)
-            self._conn.execute(
+            conn.execute(
                 f"DELETE FROM documents WHERE uid IN ({placeholders})",
                 uid_list,
             )
@@ -122,7 +133,7 @@ class FaissEngine:
         """
         Retrieve a document by its unique ID, reconstructing the vector from the index.
         """
-        cursor = self._conn.execute(
+        cursor = self._get_conn().execute(
             "SELECT uid, int_id, payload FROM documents WHERE uid = ?",
             (uid,),
         )
@@ -153,11 +164,15 @@ class FaissEngine:
         self._faiss.write_index(self._index, str(self.index_path))
 
     def close(self) -> None:
-        self._conn.close()
+        conn = getattr(self._thread_local, "conn", None)
+        if conn is not None:
+            conn.close()
+            del self._thread_local.conn
 
     def _ensure_schema(self) -> None:
-        with self._conn:
-            self._conn.execute(
+        conn = self._get_conn()
+        with conn:
+            conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS documents (
                     uid TEXT PRIMARY KEY,
@@ -187,7 +202,7 @@ class FaissEngine:
         self._index.remove_ids(selector)
 
     def _next_int_id(self) -> int:
-        cursor = self._conn.execute("SELECT COALESCE(MAX(int_id), -1) + 1 FROM documents")
+        cursor = self._get_conn().execute("SELECT COALESCE(MAX(int_id), -1) + 1 FROM documents")
         row = cursor.fetchone()
         return int(row[0]) if row is not None else 0
 
@@ -195,7 +210,7 @@ class FaissEngine:
         if not uids:
             return {}
         placeholders = ", ".join("?" for _ in uids)
-        cursor = self._conn.execute(
+        cursor = self._get_conn().execute(
             f"SELECT uid, int_id FROM documents WHERE uid IN ({placeholders})",
             list(uids),
         )
@@ -203,7 +218,7 @@ class FaissEngine:
 
     def _fetch_rows_by_int_ids(self, ids: Sequence[int]) -> Dict[int, sqlite3.Row]:
         placeholders = ", ".join("?" for _ in ids)
-        cursor = self._conn.execute(
+        cursor = self._get_conn().execute(
             f"SELECT uid, int_id, payload FROM documents WHERE int_id IN ({placeholders})",
             list(ids),
         )
@@ -227,7 +242,7 @@ class FaissEngine:
     def _rebuild_index(self, overrides: Dict[str, VectorDocument]) -> None:
         old_index = self._index
         self._index = self._create_index()
-        cursor = self._conn.execute("SELECT uid, int_id FROM documents")
+        cursor = self._get_conn().execute("SELECT uid, int_id FROM documents")
         vectors: List[List[float]] = []
         ids: List[int] = []
         for row in cursor.fetchall():
