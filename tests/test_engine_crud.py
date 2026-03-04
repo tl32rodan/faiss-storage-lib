@@ -63,6 +63,48 @@ class TestFaissEngineCrud(unittest.TestCase):
             finally:
                 reloaded.close()
 
+    def test_get_tracked_sources_and_batch_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = FaissEngine(tmpdir, dimension=4)
+            try:
+                docs = [
+                    VectorDocument(
+                        uid="doc-1",
+                        vector=[1.0, 0.0, 0.0, 0.0],
+                        payload={"metadata": {"source": "alpha"}, "msg": "first"},
+                    ),
+                    VectorDocument(
+                        uid="doc-2",
+                        vector=[0.0, 1.0, 0.0, 0.0],
+                        payload={"metadata": {"source": "alpha"}, "msg": "second"},
+                    ),
+                    VectorDocument(
+                        uid="doc-3",
+                        vector=[0.0, 0.0, 1.0, 0.0],
+                        payload={"metadata": {"source": "beta"}, "msg": "third"},
+                    ),
+                ]
+                engine.add(docs)
+
+                tracked = engine.get_tracked_sources()
+                self.assertEqual(set(tracked.keys()), {"alpha", "beta"})
+                self.assertEqual(set(tracked["alpha"]), {"doc-1", "doc-2"})
+                self.assertEqual(tracked["beta"], ["doc-3"])
+
+                engine.delete(tracked["alpha"])
+
+                self.assertIsNone(engine.get_by_id("doc-1"))
+                self.assertIsNone(engine.get_by_id("doc-2"))
+                self.assertIsNotNone(engine.get_by_id("doc-3"))
+
+                post_delete_tracked = engine.get_tracked_sources()
+                self.assertEqual(post_delete_tracked, {"beta": ["doc-3"]})
+
+                deleted_search_results = engine.search([1.0, 0.0, 0.0, 0.0], top_k=3)
+                self.assertEqual([doc.uid for doc in deleted_search_results], ["doc-3"])
+            finally:
+                engine.close()
+
 
 if __name__ == "__main__":
     unittest.main()
