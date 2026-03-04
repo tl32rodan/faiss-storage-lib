@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections import defaultdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Iterable, List, Sequence
+from typing import TYPE_CHECKING, DefaultDict, Dict, Iterable, List, Sequence
 
 import numpy as np
 
@@ -80,13 +81,27 @@ class FaissEngine:
             else:
                 self._index.add_with_ids(self._prepare_vectors(vectors), self._prepare_ids(ids))
 
-    def delete(self, uids: Iterable[str]) -> None:
+    def get_tracked_sources(self) -> dict[str, list[str]]:
+        cursor = self._get_conn().execute("SELECT uid, payload FROM documents")
+        grouped: DefaultDict[str, list[str]] = defaultdict(list)
+        for row in cursor.fetchall():
+            uid = row["uid"]
+            try:
+                payload = json.loads(row["payload"])
+            except json.JSONDecodeError:
+                continue
+            metadata = payload.get("metadata") if isinstance(payload, dict) else None
+            source = metadata.get("source") if isinstance(metadata, dict) else None
+            if isinstance(source, str):
+                grouped[source].append(uid)
+        return dict(grouped)
+
+    def delete(self, uids: list[str]) -> None:
         with self._write_lock:
-            uid_list = list(uids)
-            if not uid_list:
+            if not uids:
                 return
-            existing_ids = self._fetch_int_ids(uid_list)
-            ids = [existing_ids[uid] for uid in uid_list if uid in existing_ids]
+            existing_ids = self._fetch_int_ids(uids)
+            ids = [existing_ids[uid] for uid in uids if uid in existing_ids]
             rebuild_needed = False
             if ids:
                 try:
@@ -95,10 +110,10 @@ class FaissEngine:
                     rebuild_needed = True
             conn = self._get_conn()
             with conn:
-                placeholders = ", ".join("?" for _ in uid_list)
+                placeholders = ", ".join("?" for _ in uids)
                 conn.execute(
                     f"DELETE FROM documents WHERE uid IN ({placeholders})",
-                    uid_list,
+                    uids,
                 )
             if rebuild_needed:
                 self._rebuild_index({})
