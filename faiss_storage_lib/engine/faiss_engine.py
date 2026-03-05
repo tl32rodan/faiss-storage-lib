@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 
 
 class FaissEngine:
+    _SQL_VARIABLE_CHUNK_SIZE = 100
+
     def __init__(self, index_dir: str, dimension: int) -> None:
         self.index_dir = Path(index_dir)
         self.dimension = dimension
@@ -110,11 +112,12 @@ class FaissEngine:
                     rebuild_needed = True
             conn = self._get_conn()
             with conn:
-                placeholders = ", ".join("?" for _ in uids)
-                conn.execute(
-                    f"DELETE FROM documents WHERE uid IN ({placeholders})",
-                    uids,
-                )
+                for uid_chunk in self._iter_chunks(uids):
+                    placeholders = ", ".join("?" for _ in uid_chunk)
+                    conn.execute(
+                        f"DELETE FROM documents WHERE uid IN ({placeholders})",
+                        uid_chunk,
+                    )
             if rebuild_needed:
                 self._rebuild_index({})
 
@@ -226,20 +229,34 @@ class FaissEngine:
     def _fetch_int_ids(self, uids: Sequence[str]) -> Dict[str, int]:
         if not uids:
             return {}
-        placeholders = ", ".join("?" for _ in uids)
-        cursor = self._get_conn().execute(
-            f"SELECT uid, int_id FROM documents WHERE uid IN ({placeholders})",
-            list(uids),
-        )
-        return {row["uid"]: int(row["int_id"]) for row in cursor.fetchall()}
+        rows: Dict[str, int] = {}
+        conn = self._get_conn()
+        for uid_chunk in self._iter_chunks(uids):
+            placeholders = ", ".join("?" for _ in uid_chunk)
+            cursor = conn.execute(
+                f"SELECT uid, int_id FROM documents WHERE uid IN ({placeholders})",
+                uid_chunk,
+            )
+            rows.update({row["uid"]: int(row["int_id"]) for row in cursor.fetchall()})
+        return rows
 
     def _fetch_rows_by_int_ids(self, ids: Sequence[int]) -> Dict[int, sqlite3.Row]:
-        placeholders = ", ".join("?" for _ in ids)
-        cursor = self._get_conn().execute(
-            f"SELECT uid, int_id, payload FROM documents WHERE int_id IN ({placeholders})",
-            list(ids),
-        )
-        return {int(row["int_id"]): row for row in cursor.fetchall()}
+        rows: Dict[int, sqlite3.Row] = {}
+        conn = self._get_conn()
+        for id_chunk in self._iter_chunks(ids):
+            placeholders = ", ".join("?" for _ in id_chunk)
+            cursor = conn.execute(
+                f"SELECT uid, int_id, payload FROM documents WHERE int_id IN ({placeholders})",
+                id_chunk,
+            )
+            rows.update({int(row["int_id"]): row for row in cursor.fetchall()})
+        return rows
+
+    def _iter_chunks(
+        self, values: Sequence[str] | Sequence[int]
+    ) -> Iterable[list[str] | list[int]]:
+        for start in range(0, len(values), self._SQL_VARIABLE_CHUNK_SIZE):
+            yield list(values[start : start + self._SQL_VARIABLE_CHUNK_SIZE])
 
     def _reconstruct_vector(self, int_id: int) -> List[float]:
         return self._reconstruct_vector_from(self._index, int_id)
