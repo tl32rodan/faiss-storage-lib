@@ -1,8 +1,33 @@
+import sqlite3
 import tempfile
 import unittest
 
 from faiss_storage_lib.core import VectorDocument
 from faiss_storage_lib.engine import FaissEngine
+
+
+class _LimitedVariableConnection:
+    def __init__(self, conn, max_variables: int) -> None:
+        self._conn = conn
+        self._max_variables = max_variables
+
+    def execute(self, sql, parameters=()):
+        if len(parameters) > self._max_variables:
+            raise sqlite3.OperationalError("too many SQL variables")
+        return self._conn.execute(sql, parameters)
+
+    def executemany(self, sql, seq_of_parameters):
+        return self._conn.executemany(sql, seq_of_parameters)
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._conn.__exit__(exc_type, exc, tb)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
 
 class TestFaissEngineCrud(unittest.TestCase):
@@ -102,6 +127,31 @@ class TestFaissEngineCrud(unittest.TestCase):
 
                 deleted_search_results = engine.search([1.0, 0.0, 0.0, 0.0], top_k=3)
                 self.assertEqual([doc.uid for doc in deleted_search_results], ["doc-3"])
+            finally:
+                engine.close()
+
+    def test_large_batch_add_and_delete_exceeds_sqlite_variable_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            engine = FaissEngine(tmpdir, dimension=4)
+            try:
+                conn = engine._get_conn()
+                engine._thread_local.conn = _LimitedVariableConnection(conn, max_variables=100)
+
+                docs = [
+                    VectorDocument(
+                        uid=f"doc-{idx}",
+                        vector=[float(idx), 0.0, 0.0, 0.0],
+                        payload={"metadata": {"source": "bulk"}, "msg": str(idx)},
+                    )
+                    for idx in range(300)
+                ]
+
+                engine.add(docs)
+                tracked = engine.get_tracked_sources()
+                self.assertEqual(len(tracked["bulk"]), 300)
+
+                engine.delete([doc.uid for doc in docs])
+                self.assertEqual(engine.get_tracked_sources(), {})
             finally:
                 engine.close()
 
