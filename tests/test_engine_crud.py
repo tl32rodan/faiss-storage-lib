@@ -134,8 +134,8 @@ class TestFaissEngineCrud(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             engine = FaissEngine(tmpdir, dimension=4)
             try:
-                conn = engine._get_conn()
-                engine._thread_local.conn = _LimitedVariableConnection(conn, max_variables=100)
+                conn = engine._doc_store._get_conn()
+                engine._doc_store._thread_local.conn = _LimitedVariableConnection(conn, max_variables=100)
 
                 docs = [
                     VectorDocument(
