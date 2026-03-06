@@ -7,6 +7,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import DefaultDict, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 from faiss_storage_lib.core.schema import VectorDocument
 
 _SQL_VARIABLE_CHUNK_SIZE = 100
@@ -32,10 +34,17 @@ class SqliteDocumentStore:
                 CREATE TABLE IF NOT EXISTS documents (
                     uid TEXT PRIMARY KEY,
                     int_id INTEGER UNIQUE,
-                    payload TEXT NOT NULL
+                    payload TEXT NOT NULL,
+                    vector BLOB
                 )
                 """
             )
+            # Idempotent migration for databases created before the vector
+            # BLOB column was introduced.
+            try:
+                conn.execute("ALTER TABLE documents ADD COLUMN vector BLOB")
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     def upsert(self, rows: List[Tuple[str, int, str]]) -> None:
         conn = self._get_conn()
@@ -47,6 +56,25 @@ class SqliteDocumentStore:
                 ON CONFLICT(uid) DO UPDATE SET
                     int_id = excluded.int_id,
                     payload = excluded.payload
+                """,
+                rows,
+            )
+
+    def upsert_with_vectors(
+        self,
+        rows: List[Tuple[str, int, str, Optional[bytes]]],
+    ) -> None:
+        """Upsert rows that include a serialised vector BLOB (for IVF_PQ)."""
+        conn = self._get_conn()
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO documents (uid, int_id, payload, vector)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(uid) DO UPDATE SET
+                    int_id = excluded.int_id,
+                    payload = excluded.payload,
+                    vector = excluded.vector
                 """,
                 rows,
             )
@@ -102,6 +130,20 @@ class SqliteDocumentStore:
     def fetch_all_uid_int_ids(self) -> List[sqlite3.Row]:
         cursor = self._get_conn().execute("SELECT uid, int_id FROM documents")
         return cursor.fetchall()
+
+    def fetch_vector_blob(self, int_id: int) -> List[float]:
+        """Return the exact float32 vector stored as a BLOB for the given int_id.
+
+        Returns an empty list if no blob is stored (e.g. non-IVF_PQ index types).
+        """
+        cursor = self._get_conn().execute(
+            "SELECT vector FROM documents WHERE int_id = ?",
+            (int_id,),
+        )
+        row = cursor.fetchone()
+        if row is None or row["vector"] is None:
+            return []
+        return np.frombuffer(row["vector"], dtype="float32").tolist()
 
     def get_tracked_sources(self) -> Dict[str, List[str]]:
         cursor = self._get_conn().execute("SELECT uid, payload FROM documents")

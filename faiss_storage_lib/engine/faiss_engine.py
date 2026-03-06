@@ -5,8 +5,11 @@ import threading
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+import numpy as np
+
 from faiss_storage_lib.core.schema import VectorDocument
 from faiss_storage_lib.engine.document_store import SqliteDocumentStore
+from faiss_storage_lib.engine.index_config import IndexConfig, IndexType
 from faiss_storage_lib.engine.interfaces import IDocumentDatabase, IVectorIndex
 from faiss_storage_lib.engine.vector_store import FaissVectorStore
 
@@ -18,12 +21,21 @@ class FaissEngine:
     Accepts optional IVectorIndex and IDocumentDatabase via dependency injection for
     testability and future extensibility (e.g. swapping FAISS for pgvector, SQLite for
     PostgreSQL).
+
+    Pass an IndexConfig to select the FAISS index strategy:
+        IndexType.FLAT     – exact search, no training (default)
+        IndexType.IVF_FLAT – inverted-file, faster search, same memory as FLAT
+        IndexType.IVF_SQ   – scalar-quantised, ~4–8× memory reduction
+        IndexType.IVF_PQ   – product-quantised, ~8–32× memory reduction;
+                             raw vectors are also stored in SQLite for exact
+                             reconstruction via get_by_id() and rebuild().
     """
 
     def __init__(
         self,
         index_dir: str,
         dimension: int,
+        index_config: Optional[IndexConfig] = None,
         *,
         vector_store: Optional[IVectorIndex] = None,
         doc_store: Optional[IDocumentDatabase] = None,
@@ -31,10 +43,21 @@ class FaissEngine:
         index_path = Path(index_dir)
         index_path.mkdir(parents=True, exist_ok=True)
         self._index_path = str(index_path / "faiss.index")
-        self._vector_store: IVectorIndex = vector_store or FaissVectorStore(index_path, dimension)
+        self._index_config = index_config or IndexConfig()
+
+        # Build the document store first so the fetch_vector_blob callback is
+        # available when constructing FaissVectorStore (needed for IVF_PQ).
         self._doc_store: IDocumentDatabase = doc_store or SqliteDocumentStore(
             index_path / "docstore.db"
         )
+
+        self._vector_store: IVectorIndex = vector_store or FaissVectorStore(
+            index_path,
+            dimension,
+            self._index_config,
+            fetch_vector_blob=self._doc_store.fetch_vector_blob,
+        )
+
         self._write_lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -66,15 +89,21 @@ class FaissEngine:
                 ids.append(int_id)
                 vectors.append(doc.vector)
                 payload_rows.append((doc.uid, int_id, json.dumps(doc.payload)))
-            self._doc_store.upsert(payload_rows)
+
+            if self._index_config.index_type == IndexType.IVF_PQ:
+                blob_rows = [
+                    (uid, int_id, payload, np.array(vec, dtype="float32").tobytes())
+                    for (uid, int_id, payload), vec in zip(payload_rows, vectors)
+                ]
+                self._doc_store.upsert_with_vectors(blob_rows)
+            else:
+                self._doc_store.upsert(payload_rows)
+
             if rebuild_needed:
-                uid_int_ids = {row[0]: row[1] for row in payload_rows}
                 all_rows = self._doc_store.fetch_all_uid_int_ids()
                 uid_int_ids = {row["uid"]: int(row["int_id"]) for row in all_rows}
                 self._vector_store.rebuild({doc.uid: doc for doc in doc_list}, uid_int_ids)
             else:
-                import numpy as np
-
                 self._vector_store.add(
                     np.array(vectors, dtype="float32"),
                     np.array(ids, dtype="int64"),
@@ -101,8 +130,6 @@ class FaissEngine:
     def search(self, query_vector: List[float], top_k: int) -> List[VectorDocument]:
         if top_k <= 0 or self._vector_store.ntotal == 0:
             return []
-        import numpy as np
-
         query = np.array([query_vector], dtype="float32")
         distances, indices = self._vector_store.search(query, top_k)
         ids = [int(idx) for idx in indices[0] if idx >= 0]
