@@ -123,7 +123,7 @@ class FaissEngine:
                     uid=row["uid"],
                     vector=vector,
                     payload=payload,
-                    score=float(distance),
+                    score=self._vector_store.normalize_score(float(distance)),
                 )
             )
         return results
