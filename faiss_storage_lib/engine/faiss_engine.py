@@ -104,13 +104,13 @@ class FaissEngine:
         import numpy as np
 
         query = np.array([query_vector], dtype="float32")
-        distances, indices = self._vector_store.search(query, top_k)
+        scores, indices = self._vector_store.search(query, top_k)
         ids = [int(idx) for idx in indices[0] if idx >= 0]
         if not ids:
             return []
         rows = self._doc_store.fetch_by_int_ids(ids)
         results: List[VectorDocument] = []
-        for distance, int_id in zip(distances[0], indices[0]):
+        for score, int_id in zip(scores[0], indices[0]):
             if int_id < 0:
                 continue
             row = rows.get(int(int_id))
@@ -123,7 +123,7 @@ class FaissEngine:
                     uid=row["uid"],
                     vector=vector,
                     payload=payload,
-                    score=self._vector_store.normalize_score(float(distance)),
+                    score=float(score),
                 )
             )
         return results

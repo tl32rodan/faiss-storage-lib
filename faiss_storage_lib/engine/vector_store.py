@@ -40,15 +40,17 @@ class FaissVectorStore:
         self._index.remove_ids(selector)
 
     def search(self, query: np.ndarray, top_k: int) -> Tuple[np.ndarray, np.ndarray]:
-        return self._index.search(query, top_k)
-
-    def normalize_score(self, raw_distance: float) -> float:
-        """Convert a raw FAISS distance to a 0-1 similarity score (1 = most similar)."""
-        metric = self._metric_type()
-        normalizer = _SCORE_NORMALIZERS.get(metric)
+        distances, indices = self._index.search(query, top_k)
+        normalizer = _SCORE_NORMALIZERS.get(self._metric_type())
         if normalizer is None:
-            raise ValueError(f"No score normalizer registered for metric_type={metric}")
-        return normalizer(raw_distance)
+            raise ValueError(
+                f"No score normalizer registered for metric_type={self._metric_type()}"
+            )
+        scores = np.array(
+            [[normalizer(float(d)) for d in row] for row in distances],
+            dtype="float32",
+        )
+        return scores, indices
 
     def reconstruct(self, int_id: int) -> List[float]:
         return self._reconstruct_from(self._index, int_id)
