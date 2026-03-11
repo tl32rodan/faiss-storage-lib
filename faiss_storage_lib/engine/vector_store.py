@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Tuple
 
 import numpy as np
 
@@ -9,6 +9,12 @@ from faiss_storage_lib.core.schema import VectorDocument
 
 if TYPE_CHECKING:
     import faiss
+
+
+_SCORE_NORMALIZERS: Dict[int, Callable[[float], float]] = {
+    1: lambda d: 1.0 / (1.0 + d),  # METRIC_L2: squared-L2 distance
+    0: lambda d: max(0.0, min(1.0, d)),  # METRIC_INNER_PRODUCT: already similarity-like
+}
 
 
 class FaissVectorStore:
@@ -34,7 +40,17 @@ class FaissVectorStore:
         self._index.remove_ids(selector)
 
     def search(self, query: np.ndarray, top_k: int) -> Tuple[np.ndarray, np.ndarray]:
-        return self._index.search(query, top_k)
+        distances, indices = self._index.search(query, top_k)
+        normalizer = _SCORE_NORMALIZERS.get(self._metric_type())
+        if normalizer is None:
+            raise ValueError(
+                f"No score normalizer registered for metric_type={self._metric_type()}"
+            )
+        scores = np.array(
+            [[normalizer(float(d)) for d in row] for row in distances],
+            dtype="float32",
+        )
+        return scores, indices
 
     def reconstruct(self, int_id: int) -> List[float]:
         return self._reconstruct_from(self._index, int_id)
@@ -62,6 +78,14 @@ class FaissVectorStore:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _metric_type(self) -> int:
+        """Return the FAISS metric type of the underlying index."""
+        index = self._index
+        # IndexIDMap wraps a sub-index; read metric_type from the inner index.
+        if hasattr(index, "index"):
+            return index.index.metric_type
+        return index.metric_type
 
     def _load_or_create(self) -> "faiss.Index":
         if self._index_path.exists():
